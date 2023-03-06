@@ -1,0 +1,375 @@
+---
+title: "What players are worth their weight in gold?"
+subtitle: "Technical Appendix"
+author: "Sean Dube, Andrej Pospisil"
+date: '`r Sys.Date()`'
+output:
+   pdf_document:
+      fig_caption: true
+      number_sections: true
+abstract: |
+  The aim of this project was to determine whether there exists a significant difference in market value of soccer players by playing position. In order to answer this question, we constructed two regression models - one without any controls and one with skill as a control variable. The analysis showed that, in the absence of controls, the attackers are the most valuable group of players followed by the midfielders and the defenders, respectively. However, once skill is controlled for, the defenders become the most valuable group of players followed by the attackers and the midfielders, respectively.  
+---
+
+\newpage 
+\tableofcontents 
+\newpage
+
+
+```{r setup, include = FALSE, warning=FALSE, message=FALSE}
+library(mosaic) 
+library(readxl)
+library(dplyr)
+library(skimr)
+library(tidyr)
+library(ggcorrplot)
+library(gridExtra)
+```
+
+# Introduction
+
+Even if you are not a soccer fan, you have likely heard the names of Cristiano Ronaldo, Neymar and Kylian Mbappe. A common thread between these players is that they are all attackers, and the reason why you heard of them is likely because their current clubs paid more than 100 million euros to acquire them. \newline
+Since you could not name a soccer defender to save your life, you may be wondering are the attackers really more valuable than the non-attackers and, if so, is there a relationship between market value and skill? \newline
+In order to satisfy the curiosity of all soccer fans who may have wondered about this, we will explore two questions: \newline
+1. Is it true that the attackers are more valuable than the non-attackers? \newline
+2. Is there a relationship between skill and market value over time? \newline
+
+
+# Data overview
+
+## Data origin
+
+Skill is impossible to measure accurately, but we can employ the next best thing - combined opinion of experts. Just as the gymnasts are rated by a committee of judges based on the quality of their performance, so can the soccer players be rated by soccer experts based on their aggregate performance in games over one season. \newline
+The soccer experts who created and published soccer player ratings with respect to different skills are the creators of a popular soccer-themed video game called FIFA. We retrieved the dataset which contains these ratings. \newline
+
+```{r echo = FALSE, message = FALSE, warning = FALSE}
+# data loading
+fifa20 <- readRDS(file = "fifa20.Rds")
+```
+
+```{r echo = FALSE, message = FALSE, warning = FALSE}
+# data wrangling
+
+# omitting goalkeepers and substitutes, grouping players into three positions, 
+# selecting the six relevant variables
+df <- fifa20 %>%
+  filter(team_position != "GK", team_position != "RES", team_position != "SUB") %>%
+  mutate(position = ifelse(team_position %in% c("CF", "LF", "LS", "RF", "RS", "ST"), "ATK",
+                           ifelse(team_position %in% c("CB", "LB", "LCB", "RB", "RCB"), "DEF",
+                                  "MID"))) %>%
+  mutate(value_eur = value_eur / 1000000) %>% 
+  select(value_eur, position, pace, shooting, 
+         passing, dribbling, defending, physic) %>%
+  rename(Value = value_eur, Position = position, Pace = pace, Shooting = shooting, 
+         Passing = passing, Dribbling = dribbling, Defending = defending, 
+         Strength = physic)
+
+# omitting rows with missing values
+df <- na.omit(df)
+
+df$Position <- factor(df$Position, levels=c("DEF", "MID", "ATK"))
+```
+
+## Overview of variables
+
+The `fifa20.Rds` dataset contains information about dozens of skills, but we will focus on the six that we consider as most important. Those skills are the following: \newline
+1. Strength: the ability to stand your ground in a shoulder-to-shoulder duel \newline
+2. Shooting: hitting the ball in an attempt to score a goal \newline
+3. Passing: hitting the ball accurately towards an allied player \newline
+4. Pace: the ability to run fast with and without the ball \newline
+5. Dribbling: maneuvering the ball past the opposing players \newline
+6. Defending: taking possession of the ball from an opposing player \newline
+
+In addition to these skills, we have information about a player's position and market value. \newline
+Position denotes the role a player takes on the field. Players can be defenders, midfielders or attackers. \newline
+Market value refers to the amount of money (transfer fee) that a club has to pay to acquire a player. 
+
+The dataset contains information about the above-described variables for 6798 professional soccer players. All skills are rated on the scale from one to a hundred. The players were not sampled randomly, but, given the dataset's size, they represent nearly the entire population of professional soccer players.
+
+\newpage
+
+## Univariate exploratory data analysis
+
+The output below presents the five-number summary for all of our quantitative variables. The number of soccer players per each position is shown as well.   
+
+```{r}
+summary(df)
+```
+
+
+
+```{r message = FALSE, warning=FALSE}
+gg <- theme(legend.position="none", axis.title.y = element_blank(), axis.title.x = element_blank())
+
+plot1 <- df %>% ggplot(aes(x = Pace)) + geom_density() + gg + ggtitle("Pace") 
+plot2 <- df %>% ggplot(aes(x = Shooting)) + geom_density() + gg + ggtitle("Shooting") 
+plot3 <- df %>% ggplot(aes(x = Passing)) + geom_density() + gg + ggtitle("Passing") 
+plot4 <- df %>% ggplot(aes(x = Dribbling)) + geom_density() + gg + ggtitle("Dribbling") 
+plot5 <- df %>% ggplot(aes(x = Defending)) + geom_density() + gg + ggtitle("Defending") 
+plot6 <- df %>% ggplot(aes(x = Strength)) + geom_density() + gg + ggtitle("Strength") 
+
+grid.arrange(grobs=list(plot1,plot2,plot3,plot4,plot5,plot6), nrow=2, common.legend=T,
+             legend.position="bottom", top="Figure 1. Distribution of skill variables")
+```
+
+The histograms from Figure 1. show us that the distributions of the six skill attributes vary in shape. While `Pace`, `Passing`, `Dribbling` and `Strength` appear to be somewhat normally distributed, `Shooting` and `Defending` seem to be quite left-skewed. 
+
+## Multivariate exploratory data analysis 
+
+### Relationship between skill and position
+
+```{r echo = FALSE, message = FALSE, warning = FALSE}
+# creating the dataframe with mean values of each skill per position
+df_mean <- df %>%
+  group_by(Position) %>%
+  summarise_at(vars(names(df[sapply(df, is.numeric)])), funs(mean(., na.rm=TRUE)))
+```
+
+Before tackling the analysis of market value by position, let us explore the relationship between skill and position.
+
+```{r echo = FALSE, message=FALSE, warning=FALSE}
+# creating the data frame needed to plot the bar charts of mean values per position
+df_bar <- df_mean %>%
+  select(Position, Pace, Shooting, Dribbling, Defending, Strength, Passing) %>%
+  gather(key = "key", value = "value", -Position) %>%
+  mutate(value = round(value, digits = 0))
+
+position_names <- c(`ATK` = "Attackers", `DEF` = "Defenders", `MID` = "Midfielders")
+
+df_bar$Position <- factor(df_bar$Position,
+                             levels=c("DEF", "MID", "ATK"))
+```
+
+```{r fig.width=8, fig.height=5, warning=FALSE, message=FALSE}
+# plotting the bar charts of mean values per position
+
+caption_barchart <- "Figure 2. The horizontal axis represents rating on a scale from one to a hundred. The vertical axis shows which skill category is\n rated. Each subsection of the graph corresponds to players who play in the position indicated by the respective label."
+
+barchart1 <- ggplot(data = df_bar, aes(x = key, y = value, fill = key)) +
+  geom_bar(stat = "identity") + 
+  facet_grid(~ Position, labeller = as_labeller(position_names)) + 
+  coord_flip() + ylim(0, 100) +
+  labs(y = "Rating", x = "Skill",
+       title = "Figure 2. Average player skill rating by position",
+       caption = caption_barchart) +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold"),
+        plot.caption = element_text(hjust = 0)) +
+  geom_text(aes(label = value), hjust = 1.5, color = "white", size = 3.5) +
+  theme(legend.position = "none")
+barchart1 
+```
+
+Figure 2. displays average skill ratings of players by position. 
+We notice that the midfielders have the most balanced profile with similar ratings in all skill categories.
+The attackers and the defenders are more specialized in their roles and possess ratings which are skewed towards skills required for their roles.
+
+```{r fig.width=6, fig.height=5, warning=FALSE, message=FALSE}
+# plotting the correlation matrix for the six skills
+
+caption_corrplot <- "Figure 3. The correlation matrix between different skills. Red color indicates\n positive correlation; blue color indicates negative correlation. The darker the shade\n of the color, the stronger the correlation as indicated by the legend on the right."
+
+corr <- round(cor(df[,c(3:8)]), 1)
+
+corrplot1 <- ggcorrplot(corr, hc.order = TRUE, type = "lower", outline.col = "white") + theme_bw() +
+  labs(title = "Figure 3. Correlation between pairs of skills", caption = caption_corrplot) + 
+  theme(axis.title.x = element_blank(), axis.title.y = element_blank(),
+        plot.title = element_text(hjust = 0.5, face = "bold"), 
+        plot.caption = element_text(hjust = 0)) 
+corrplot1 
+```
+
+The correlation half-matrix in Figure 3. presents the strength and the direction of correlation between all combinations of player skills. We notice that correlations between skills vary in strength and direction. \newline
+Strength and defending are positively correlated with one another, but negatively with all the other skills. \newline
+The highest positive pairwise-correlations exist between shooting, passing and dribbling. \newline
+
+\newpage
+
+### Relationship between market value and position
+
+Table 1. presents the distribution of player market value by position. \newline
+We notice that the attackers have the highest average market value followed by the midfielders and the defenders, respectively. \newline
+Some players have a market value of zero which means that they are currently without a club and can be acquired for free (free agents). 
+For each position, the distribution of market value is skewed towards the high-end. This makes sense because, relative to the entire soccer population, there exist very few "star" players with high market values. However, here as well we notice the possible discrepancy in market values since the attackers and the midfielders are even more right-skewed than the defenders with respect to market value - the most valuable midfielder is worth 118.5 million euros; the most valuable defender less than half of that at 57 million euros. 
+
+```{r echo = FALSE}
+# Distribution of player values by position
+t <- tapply(df$Value, df$Position, summary)
+
+Attackers <- c(0.05, 0.75, 1.60, 4.96, 5.50, 86.00)
+Midfielders <- c(0.00, 0.55, 1.20, 4.11, 4.20, 118.50)
+Defenders <- c(0.00, 0.48, 0.90, 2.84, 2.90, 57.00)
+
+df_table <- data.frame(rbind(Attackers, Midfielders, Defenders))
+names(df_table) <- c("Min", "1st Qu.", "Median", "Mean", "3rd Qu.", "Max")
+
+knitr::kable(df_table, caption = "Distribution of player market values by position (in million euros)")
+```
+
+The side-by-side boxplots in Figure 4. visually depict the difference in market value by position. Due to the previously mentioned skewness, market values needed to be log-transformed in order to "condense" the scale of the vertical axis and allow for proper-looking graphs. Plotting the market value distributions without this transformation would only show outliers. \newline
+The log-transformation renders the interpretation of absolute market values meaningless, but we still see that the attackers have the highest average market value, followed closely by the midfielders and finally by the defenders. However, appearance can be deceiving. 
+
+```{r fig.width=6, fig.height=4, warning=FALSE, message=FALSE}
+#plotting side by side boxplot
+
+caption_boxplot <- "Figure 4. The horizontal axis denotes the position: attackers (ATK), midfielders (MID) and defenders (DEF).\n The vertical axis represents the players' log-market value in millions of euros."
+
+p2 <- ggplot(df, aes(x = factor(Position), y = log(Value), fill = factor(Position))) +
+  geom_boxplot() + 
+  labs(title = "Figure 4. Distribution of log-player market values by position",
+       y = "Log-market value(in milion euros)", 
+       x = "Position", caption = caption_boxplot) +
+  theme(legend.position = "none",
+        plot.caption = element_text(hjust = 0)) +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold"))
+p2
+```
+
+
+Both Table 1. and Figure 4. suggest that there exists a difference in market value with respect to position. In order to formally explore this difference, we will construct two multiple regression models with market value as the response variable.
+
+# Formal statistical analysis and results
+
+## Regression models
+
+In order to test whether there exists a significant difference in player market value by position, we will construct two regression models. 
+
+The first regression model is presented below. It has `market value` as the response variable and `position` as a categorical, predictor variable.  
+
+```{r}
+# formally testing whether a difference in market value by position exists
+model1 <- lm(data = df, Value ~ Position)
+summary(model1)
+```
+This model tells us that the attackers really do have the highest market value. On average, the midfielders are worth 0.8M euros less, while the defenders are worth 1.9M euros less. All of these differences are statistically significant as indicated by the respective p-values of the coefficients for each group of players. 
+
+Now let us explore what happens to the relationship between market value and position when we control for skill. \newline
+The second regression model is presented below. It has `market value` as the response variable and `position` as a categorical, predictor variable just like the first model. However, it also contains the skill variables included as predictors. 
+
+```{r}
+# formally testing whether a difference in market value by position exists, 
+# controlling for skill
+model2 <- lm(data = df, Value ~ Position + Pace + Shooting + Passing + Dribbling + Strength)
+summary(model2)
+```
+
+This model tell us that, when we include the skill variables into the model (i.e. control for skill), the defenders actually have the highest market value followed by the attackers and then by the defenders. Controlling for skill, the attackers are, on average, worth 0.95M euros less than the defenders, while the midfielders are worth 2.43M euros less than the defenders. All of these differences are statistically significant at the 5% level of significance as indicated by the respective p-values of the coefficients for each group of players. 
+
+
+This result, although somewhat surprising, does make sense. The attackers generally have higher overall skill ratings than the defenders. The reason for that is that an attacker who scores one goal per game is considered excellent even if he misses ten other goal opportunities. Conversely, a defender who prevents ten goal chances, but allows one goal, is considered incompetent. \newline
+The defenders with high overall skill rating, then, are very rare and therefore more expensive. If you want to buy an attacker with an overall skill rating of 85, there are a hundred players to choose from. If you want to buy a defender with the same overall skill rating, there are maybe ten of them. 
+
+## Evaluation of regression conditions for valid inference
+
+Multiple regression requires four assumptions for valid inference: \newline
+1. Linearity \newline
+2. Independence \newline
+3. Near-normality of errors \newline
+4. Equal variance \newline
+
+The scatterplot of residuals vs. fitted values shown below tells us that linearity and equal variance assumptions are likely not met. \newline
+Provided that the linearity condition holds, the red line should be almost perfectly straight. However, we see that the line is quite curved. \newline
+Provided that the equal variance condition holds, the black dots should be evenly scattered around the red line. However, on the left side, the points are clustered very tightly around the line, whereas, on the right side, the points are spread out much wider from the line. 
+
+```{r}
+par(mar = c(2, 2, 2, 2))
+plot(model2, 1)
+```
+
+The normal QQ-plot shown below tells us that the normality condition is likely not met either. \newline
+Provided that the normality condition is met, the black line should be almost perfectly straight. However, we see that the line begins to curve for high values. 
+
+```{r}
+par(mar = c(2, 2, 2, 2))
+plot(model2, 2)
+```
+
+The independence assumption cannot be checked via graphs, but we have to examine the nature of the data and, possibly, the manner in which it was collected. In this case, the independence condition likely does not hold since the market value and skill attributes are not entirely independent from player to player. For example, highly skilled players may help their teammates play better. As a result, the skill ratings and market values of those teammates will increase. 
+
+Given that the assumptions for regression do not seem to hold, we have to consider the fact that the results obtained in the previous section may not be entirely accurate. 
+The problem which may be causing the failure of linearity, near-normality and equal variance conditions is the presence of outliers, i.e. the existence of players with very high market values. 
+
+\newpage
+
+# Exploration of relationship between market value and skill over time
+
+As an addition to our analysis, we will explore whether there exists a relationship between market value and skill.  
+
+```{r fig.height=5, fig.width=8}
+# reading in data frame with mean player values by year and position
+df_lineplot <- readRDS(file = "meanvaluebyyear.Rds")
+df_lineplot$position <- as.factor(df_lineplot$position)
+df_lineplot$year <- as.numeric(df_lineplot$year)
+
+caption_lineplot1 <- "Figure 5. The horizontal axis represents year. The vertical axis represents the mean market value in millions of euros. Each line\n corresponds to players in the position indicated by the legend on the right."
+
+# plotting the linepolot of mean player values by year and position
+lineplot_value <- ggplot(df_lineplot, aes(x = year, y = mean_value, 
+                                          fill = position, color = position)) + 
+  geom_line(aes(color = position, size = 0.5)) + 
+  labs(x = "Year", y = "Mean value (in million Euro)", 
+       title = "Figure 5. Average player value by position over the last five years",
+       caption = caption_lineplot1) +
+  labs(color = "Position") + ylim(0, 6) +
+  guides(size = FALSE, color = guide_legend(override.aes = list(size=5))) +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold"),  
+        plot.caption = element_text(hjust = 0))
+lineplot_value
+```
+
+The lineplot in Figure 5. shows the change in average player market value by position over the last five years. \newline
+We notice that the market values of players in all positions have been growing between 2016 and 2018 and stagnating since. \newline
+
+```{r}
+# loading in and modifying the dataset needed to create the lineplot of skill changes over time
+df_skill_time <- readRDS("meanskillsbyyear.Rds")
+
+df_skill_time <- df_skill_time %>%
+   rename(Pace = pace, Shooting = shooting, Passing = passing,
+          Dribbling = dribbling, Defending = defending, Strength = physic) %>%
+  tidyr::gather(key = "Skill", value = "value", Pace, Shooting, 
+                Passing, Defending, Dribbling, Strength) %>%
+  filter(year != 2015)
+
+df_skill_time$value <- as.numeric(df_skill_time$value)
+df_skill_time$Skill <- as.factor(df_skill_time$Skill)
+df_skill_time$year <- as.numeric(df_skill_time$year)
+```
+
+```{r fig.height=5, fig.width=8}
+# plotting the lineplot of skill changes over time
+caption_lineplot2 <- "Figure 6. The horizontal axis represents year. The vertical axis represents mean skill rating. Each line corresponds to the skill indicated\n by the legend on the right."
+
+lineplot_skill <- ggplot(df_skill_time, aes(x = year, y = value, color = Skill, group = Skill)) + 
+  geom_point() + geom_line(aes(color = Skill, size = 1)) + 
+  labs(x = "Year", y = "Mean skill rating", 
+       title = "Figure 6. Average skill rating across all positions over the last five years",
+       caption = caption_lineplot2) +
+  guides(size = FALSE, color = guide_legend(override.aes = list(size=5))) +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold"),  
+        plot.caption = element_text(hjust = 0)) 
+lineplot_skill
+```
+
+The lineplot in Figure 6. shows us that the overall skill has been stagnating over the entire five year period, with minor deviations between certain years. This indicates that the players' market values have likely not been increasing because they are becoming more skillful, but due to some other confounding factor.
+\newline
+One such factor might be a change in the belief of what is a normal price to pay for a player. Recently, the clubs owned by oil sheikhs have been paying exorbitant transfer fees to acquire players who, given their skill level, would have cost three times less ten years ago. One such transfer was that of Neymar from Barcelona to Paris Saint Germain for 222 million euros in 2017. Neymar's transfer has now become a new benchmark against which all other transfers are evaluated with respect to the balance between the player's skill and the appropriate transfer fee.
+
+
+
+# Limitations
+
+The main limitation of this study is the inability to measure skill objectively. As such we have to rely on human evaluation which will likely always include a dose of subjectivity.  \newline
+An additional complication is the fact that skill categories are based on several objective parameters. For example, `Pace` encompasses running both with and without the ball. If Player A can run without the ball at 8mph and with the ball at 4mph, how should his `Pace` rating compare to that of Player B who can run without the ball at 7mph and with the ball at 6mph? Therefore, the creators of these ratings should both possess the data on these objective parameters and the formula which aggregates that data into a single number. We have no information if that was the case. \newline
+Finally, we have to assume that the ratings are honest in that they only stem from a player's performance, not a rater's affinity for the player.
+
+# Conclusion
+Recall that the aim of this study was to answer two questions: \newline
+
+1. Is it true that the attackers have a higher market value than the non-attackers? \newline
+2. Is there a relationship between skill and market value over time? \newline
+
+The answer to the first question depends on whether you want to consider market value in isolation or conditional on skill. \newline
+In isolation, a randomly chosen attacker would likely be more valuable than a randomly chosen defender. However, if you want to buy a player with an overall skill rating of 85, you would have to pay more for a defender than an attacker.
+
+For the second question, the answer is likely no. Our study found no evidence of relationship between skill and market value. The question of what confounding factors, then, do drive up the market value is the topic for a different study. 
+
